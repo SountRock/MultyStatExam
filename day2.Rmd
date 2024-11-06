@@ -1,0 +1,172 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+---
+
+1. Разобраться с данными.
+2. Построить ординацию объектов (описаний, проб и т.п.).
+3. Визуализировать связь между полученной ординацией и параметрами среды.
+4. Сделать выводы о наиболее важных факторах.
+Деревья на острове Barro Colorado (данные из работы Condit et al. (2002), данные `BCI`, пакет `vegan`).
+https://search.r-project.org/CRAN/refmans/vegan/html/BCI.html
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(gridExtra)
+library(ape)
+library(dendextend)
+library(pvclust)
+library(tibble)
+library(tidyr)
+library(broom)
+library(ggmap)
+library(ggvegan)
+```
+
+# Начало
+```{r}
+data(BCI, BCI.env)
+BCI_env <- BCI.env[,7:9]
+
+#Отсортируем деревья по стречаемости
+BCI_sum <- as.data.frame(colSums(BCI))  
+colnames(BCI_sum) <- c("Sums")
+BCI_sum$tree <- rownames(BCI_sum)
+rownames(BCI_sum) <- NULL
+BCI_sum <- BCI_sum[order(BCI_sum$Sums, decreasing=TRUE), ]
+
+#Отобрать 5 самых частовстречаемых деревьев
+BCI <- BCI[, BCI_sum$tree[1:5]]
+
+colnames(BCI) <- gsub("[.]", replacement = "_", colnames(BCI))
+colnames(BCI_env) <- gsub("[.]", replacement = "_", colnames(BCI_env))
+
+BCI_data <- cbind(BCI_env, BCI)
+```
+
+# График ординации
+Подготовим данные:
+```{r}
+ord_mus <- metaMDS(BCI, dist = "bray", autotransform = FALSE)
+
+#Координаты точек
+ord_mus_pt <- data.frame(BCI_env, scores(ord_mus, display = "sites"))
+
+#Координаты центроидов переменных 
+ord_mus_sp <- data.frame(scores(ord_mus, display = "species"))
+ord_mus_sp$Species <- rownames(ord_mus_sp)
+```
+Прорисуем сам график:
+```{r}
+gg_ord_mus <- ggplot() +
+  geom_point(data = ord_mus_pt, 
+             aes(x = NMDS1, y = NMDS2, colour = Habitat, 
+                 shape = Stream, size = EnvHet), alpha = 0.5)
+
+gg_ord_mus_sp <- gg_ord_mus +
+  geom_text(data = ord_mus_sp, 
+            aes(x = NMDS1, y = NMDS2, 
+                label = Species))
+gg_ord_mus_sp
+```
+На проекции видно, что среди участков преобладает отсуствие прибрежной среды. Преобладает типы среды OldHigh и OldLow. Причем виды деревьев Faramea occidentalis, Alseis blackiana имет большее распространение в среде OldLow. 
+
+# Интерпретация ординации
+```{r}
+ef <- envfit(ord_mus, BCI_env[, c("Habitat", "EnvHet", "Stream")]) 
+
+ef$vectors
+
+ef$factors
+```
+предикторы EnvHet и Stream будет вносит незначительные влияния на NMDS координаты. Habitat вносит самый большой вклад в различия (по r2), значительные различя значений NMDS между разными значениями параметра потверждают это. 
+
+Получим координаты центроидов:
+```{r}
+ord_mus_ef <- fortify(ef)
+ord_mus_ef
+```
+
+```{r}
+gg_ord_mus +
+  geom_segment(data = ord_mus_ef[ord_mus_ef$type == "Vector", ],
+               aes(x = 0, xend = NMDS1, y = 0, yend = NMDS2),
+               arrow = arrow(length = unit(0.25, "cm"))) +
+  geom_text(data = ord_mus_ef[ord_mus_ef$type == "Vector", ],
+            aes(x = NMDS1, y = NMDS2, label = label, hjust = 1.1, vjust = 1)) +
+  geom_text(data = ord_mus_ef[ord_mus_ef$type == "Centroid", ],
+            aes(x = NMDS1, y = NMDS2, label = label, hjust = 1.1, vjust = 1))
+```
+
+На этом графике мы видим, что EnvHet указывает, что в переход из местообитания OldLow в OldSlope приводит к увеличению гетерогенности среды
+
+```{r}
+par(mfrow = c(1, 1))
+os_EnvHet <- ordisurf(ord_mus, BCI_env$EnvHet, method = "REML")
+par(mfrow = c(1, 1))
+```
+Из графика видно, что на участках преобладает высокий уровень разнообразия.
+
+```{r}
+summary(os_EnvHet)
+```
+
+```{r}
+fortify_ordisurf <- function(model) {
+  # Fortifies an object of class ordisurf to produce
+  # a dataframe of contour coordinates
+  # for subsequent plotting in ggplot.
+  xy <- expand.grid(x = model$grid$x, y = model$grid$y)
+  xyz <- cbind(xy, c(model$grid$z))
+  names(xyz) <- c("x", "y", "z")
+  return(na.omit(xyz))
+}
+
+ord_mus_os <- fortify_ordisurf(os_EnvHet)
+head(ord_mus_os, 4)
+```
+
+```{r}
+ggplot(data = ord_mus_os, aes(x = x, y = y, z = z)) +
+  stat_contour(aes(colour = ..level..)) +
+  labs(x = "NMDS1", y = "NMDS2", colour = "EnvHet")
+```
+
+Ближе к центру мы видим снижение уровня разнообразия среды, что потверждаеться предыдущим графикам.
+
+# Финальный график
+```{r}
+f_vect <- ord_mus_ef$type == "Vector" & ord_mus_ef$label == "EnvHet"
+
+ggplot(data = ord_mus_pt, aes(x = NMDS1, y = NMDS2)) +
+  stat_contour(data = ord_mus_os,
+               aes(x = x, y = y, z = z, colour = ..level..)) + 
+  geom_point(data = ord_mus_pt,
+             aes(fill = Habitat, shape = Stream),
+             alpha = 0.5, size = 3) +
+  scale_shape_manual(values = c(21, 24, 22, 20, 19)) +
+  geom_text(data = ord_mus_sp,
+            aes(label = Species), size = 5) + 
+  geom_segment(data = ord_mus_ef,
+               colour = "blue", size = 1,
+               aes(x = 0, xend = NMDS1, y = 0, yend = NMDS2),
+               arrow = arrow(length = unit(0.25, "cm"))) +
+  geom_text(data = ord_mus_ef,
+            colour = "blue", size = 6,
+            aes(label = label, hjust = 1.1, vjust = 0.7)) +
+  guides(fill = guide_legend(override.aes = list(shape = 22, alpha = 1))) +
+  coord_fixed() +
+  labs(colour = "EnvHet")
+```
+
+Из графика видно, что наибольший вклад из типов среды вносит OldHigh, Young и OldSlope примерно в равной значимости. 
+Предиктор Stream вносит самый незначительный вклад в распределение, даже меньше чем EnvHet.
+Вывод: наиболее значемые факторами являеться тип местообитания и степень разнообразия среды.

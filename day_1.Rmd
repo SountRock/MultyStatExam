@@ -1,0 +1,394 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+---
+
+Данные Golub и соавт. (1999) включают 47 пациентов с острым лимфобластным лейкозом (ОЛЛ) и 25 пациентов с острым миелоидным лейкозом (ОМЛ). У каждого из 72 пациентов на момент постановки диагноза были получены образцы костного мозга. Кроме того, результаты наблюдений были проанализированы с помощью чипов Affymetrix Hgu6800, в результате чего было получено 7129 экспрессий генов (зонды Affymetrix).
+
+Как указано в руководстве по Bioconductor, “ALL образуется из двух разных типов лимфоцитов (Т-клеточных и В-клеточных)”, поэтому мы можем рассмотреть данные в терминах трех классов: AML, ALL-T и ALL-B. Мы предоставляем возможность рассматривать данные как два или три класса. Кроме того, набор данных Golub часто представлен в двух формах. В одном случае данные разделены на обучающий и тестовый наборы данных: мы предоставляем их как Golub_Train и Golub_Test соответственно. В другом случае обучающий и тестовый наборы данных объединяются в один набор данных: мы назвали его golub.
+
+Набор данных Голуба, возможно, является наиболее широко изучаемым и цитируемым.
+
+1. Для группы из статьи golub поэкстериментировать с методами кластеризации:
+  -- попробовать разные метрики расстояний (не менее 3-х типов)
+  -- далее для всех матриц  растояния проверить 4 метода кластеризации и оценить её каачество используя кофенетическую корреляцию (луше автоматизировать этот процесс через функцию)
+2. Сравнить результаты кластеризации с реальными данными и для лучшего из методов сдлеать бутстреп (50-100 повторений)
+3. Сделайте осмысленные биологические выводы по представленным данным
+
+
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(gridExtra)
+library(ape)
+library(dendextend)
+library(pvclust)
+library(tibble)
+```
+
+# Исходные данные
+```{r}
+#install.packages("BiocManager")
+library(BiocManager)
+#BiocManager::install("golubEsets")
+
+require(golubEsets)
+data(Golub_Merge)
+#Данные для работы
+golub <- data.frame(Golub_Merge)[1:7129]
+
+#вектор групп для проверки
+data_test <- data.frame(count_ALL = length(Golub_Merge$ALL.AML[Golub_Merge$ALL.AML == 'ALL']),
+                        count_AML = length(Golub_Merge$ALL.AML[Golub_Merge$ALL.AML == 'AML']))
+
+View(data_test)
+```
+Проблемма кластеризации: имеються экспресиии генов двух заболеваний, различающихся типом лимфоцитов у заболевших. 
+
+# Нормализация значений
+```{r}
+Raw_mean<-colMeans(golub) %>% as_tibble() %>% arrange(value) %>% ggplot(aes(x=value))+geom_density()+xlab(label = "Mean_of_raw_data")
+
+Raw_mean
+
+minMax <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+logPlus <- function(x) {
+  (ifelse(x < 0, 0 - log( ((-1) * x) + 1), log(x + 1)))
+}
+golub_norm <- as.data.frame(lapply(golub, minMax)) #min_max работает лучше
+#golub_norm <- as.data.frame(lapply(golub, logPlus)) #НЕАКТИВИРОВАТЬ! генерирует много NaN
+Norm_mean <- colMeans(golub_norm) %>% as_tibble() %>% arrange(value)%>% ggplot(aes(x=value))+geom_density()+xlab(label = "Mean_of_norm_data")
+Norm_mean
+
+grid.arrange(Norm_mean, Raw_mean)
+```
+
+
+При использовании метода minmax результаты стали лучше.
+
+# Посчитаем растояния
+Эвклидово растояние:
+```{r}
+dist_log <- vegdist(golub_norm, method = "euclidean")
+```
+Расстояние Брея-Куртиса:
+```{r}
+dist_bray <- vegdist(golub_norm, method = "bray")
+```
+Расстояние Манхэттена:
+```{r}
+dist_manhattan <- vegdist(golub_norm, method = "manhattan")
+```
+Расстояние Кларка:
+```{r}
+dist_clark <- vegdist(golub_norm, method = "clark")
+```
+Расстояния по хорде:
+```{r}
+dist_chord <- vegdist(golub_norm, method = "chord")
+```
+
+Объединим данные вместе:
+```{r}
+disatances <- data.frame(Euclidean = as.numeric(dist_log), 
+                         Bray = as.numeric(dist_bray),
+                         Manhattan = as.numeric(dist_manhattan),
+                         Clark = as.numeric(dist_clark),
+                         Chord_dist = as.numeric(dist_chord)
+                         )
+```
+
+Построим граффики:
+```{r}
+Pl_hist <- ggplot(disatances) + geom_density() #основа для графика
+
+Pl_log <- Pl_hist + aes(x = Euclidean) + ggtitle("Логарифм") + labs(x = "Евклидово расстояние")
+
+Pl_bray <- Pl_hist + aes(x = Bray) + ggtitle("Логарифм") + labs(x = "Брей-Кертис расстояние")
+
+Pl_manhattan <- Pl_hist + aes(x = Manhattan) + ggtitle("Логарифм") + labs(x = "Расстояние Манхэттена")
+
+Pl_clark <- Pl_hist + aes(x = Clark) + ggtitle("Логарифм") + labs(x = "Расстояние Кларка")
+
+Pl_chord <- Pl_hist + aes(x = Chord_dist) + ggtitle("Логарифм") + labs(x = "Расстояние по хорде")
+
+grid.arrange(Pl_log,
+             Pl_bray,
+             Pl_manhattan,
+             Pl_clark,
+             Pl_chord)
+```
+Мы видим, что расстояние Кларка, Брей-Кертиса и по хорде приводит к более острому пику. Возможно, это знак того, что при кластерном анализе на основе этих расстояний будет выявлены менее четкие кластеры, чем при использовании других расстояний.
+
+```{r}
+hc_manhattan <- hclust(dist_manhattan, method = "complete")
+ph_manhattan <- as.dendrogram(hc_manhattan)
+plot(ph_manhattan, main = "manhattan")
+rect.hclust(hc_manhattan, k = 2)
+#axisPhylo()
+
+hc_clark <- hclust(dist_clark, method = "complete")
+ph_clark <- as.dendrogram(hc_clark)
+plot(ph_clark, main = "clark")
+rect.hclust(hc_clark, k = 2)
+#axisPhylo()
+
+
+hc_log <- hclust(dist_log, method = "complete")
+ph_log <- as.dendrogram(hc_log)
+plot(ph_log, main = "log")
+#axisPhylo()
+
+hc_bray <- hclust(dist_bray, method = "complete")
+ph_bray <- as.dendrogram(hc_bray)
+plot(ph_bray, main = "bray")
+#axisPhylo()
+```
+Но на деле, что расстояния с более выражеными пика приводят к формированию более уравновешенных кластеров по интенсивности ветвления на первом уровне.
+
+# Кластеризация
+
+Создадим универсальный метод для постройки деревьев и рассчета эффективности метода:
+```{r}
+render_tree <- function(method_name, dist_data, cor_data, title_method, num_clasters) {
+  hc <- hclust(dist_data, method = method_name)
+  ph <- as.dendrogram(hc)
+  
+  #Окраска
+  groups <- factor(Golub_Merge$ALL.AML)
+  group_colors <- c("ALL" = "#FF0000", "AML" = "#FFD700")
+  arr_colored_group <- group_colors[groups][order.dendrogram(ph)]
+
+  #Окраска ветвей
+  ph <- color_branches(ph, k = length(groups), groupLabels = groups, col =   arr_colored_group)
+
+  #Окраска меток
+  labels_colors(ph) <- arr_colored_group
+  
+  plot(ph, main = paste("Метод ", title_method, sep = " "))
+  rect.hclust(hc, k = num_clasters, border = c("#7B68EE"))
+  #axisPhylo()
+  
+  c_cop <- cophenetic(ph)
+  
+  cor_data <- rbind(corelation_data, 
+                         c(paste("Метод ", title_method, sep=" "),
+                           cor(dist_data, as.dist(c_cop)),
+                             length(hc$height)))
+  return(cor_data)
+}
+```
+Создадим хранилише для корреляций и summary:
+```{r}
+corelation_data <- data.frame(type = character(),  value = integer(), height = integer())
+```
+
+## Для Брея-Кертиса
+
+Метод отдаленного соседа:
+```{r}
+corelation_data <- render_tree("complete", dist_bray, corelation_data, "отдаленного соседа (Брей-Кертис)", 2)
+```
+Распределние реальных групп в кластерах более менее нормально.
+
+Метод UPGMA:
+```{r}
+corelation_data <- render_tree("average", dist_bray, corelation_data, "UPGMA (Брей-Кертис)", 2)
+```
+Стразу видно, что кластеризация прошла не очень успешно. Кластеры совсем не уравновешены. Про распределение реальных групп говорить даже не стоит.
+
+Метод Варда:
+```{r}
+corelation_data <- render_tree("ward.D2", dist_bray, corelation_data, "Варда (Брей-Кертис)", 2)
+```
+Похоже на метод отдаленого соседа. Распределение реальных групп в кластерах довольно сбалансированое. Здесь есть увереность в том, что кластеры более или менее соотвествуют действительности.
+
+Метод WPGMA:
+```{r}
+corelation_data <- render_tree("mcquitty", dist_bray, corelation_data, "WPGMA (Брей-Кертис)", 2)
+```
+Как видно здесь в отличии от других методов у нас выделено 2 более менее четких кластера. В предудущих методах (инорируя метод UPGMA) мы чаще видили 3 четких кластера на первом уровне.
+
+## Для Манхэттена
+
+Метод отдаленного соседа:
+```{r}
+corelation_data <- render_tree("complete", dist_manhattan, corelation_data, "отдаленного соседа (Манхэттен)", 2)
+```
+
+Расспределение групп стало хуже.
+
+Метод UPGMA:
+```{r}
+corelation_data <- render_tree("average", dist_manhattan, corelation_data, "UPGMA (Манхэттен)", 2)
+```
+
+Тут как обычно все плохо.
+
+Метод Варда:
+```{r}
+corelation_data <- render_tree("ward.D2", dist_manhattan, corelation_data, "Варда (Манхэттен)", 2)
+```
+Распреедление внутри кластеров более или менее, вроде стало немного лучше чем при Бреи-Кертисе.
+
+Метод WPGMA:
+```{r}
+corelation_data <- render_tree("mcquitty", dist_manhattan, corelation_data, "WPGMA (Манхэттен)", 2)
+```
+
+Кластеры стали сильно хуже, во всех отношениях.
+
+## Для Эвклидова
+
+Метод отдаленного соседа:
+```{r}
+corelation_data <- render_tree("complete", dist_log, corelation_data, "отдаленного соседа (Эвклид)", 2)
+```
+
+Распреедление групп внутри кластеров стало хуже.
+
+Метод UPGMA:
+```{r}
+corelation_data <- render_tree("average", dist_log, corelation_data, "UPGMA (Эвклид)", 2)
+```
+
+Тут как обычно все плохо.
+
+Метод Варда:
+```{r}
+corelation_data <- render_tree("ward.D2", dist_log, corelation_data, "Варда (Эвклид)", 2)
+```
+Распреедление внутри кластеров более или менее, вроде стало немного хуже.
+
+Метод WPGMA:
+```{r}
+corelation_data <- render_tree("mcquitty", dist_log, corelation_data, "WPGMA (Эвклид)", 2)
+```
+
+Кластеры ужасны.
+
+## Для Кларка
+
+Метод отдаленного соседа:
+```{r}
+corelation_data <- render_tree("complete", dist_clark, corelation_data, "отдаленного соседа (Кларк)", 2)
+```
+
+Расспределение групп стало сильно хуже.
+
+Метод UPGMA:
+```{r}
+corelation_data <- render_tree("average", dist_clark, corelation_data, "UPGMA (Кларк)", 2)
+```
+
+Тут как обычно все плохо.
+
+Метод Варда:
+```{r}
+corelation_data <- render_tree("ward.D2", dist_clark, corelation_data, "Варда (Кларк)", 2)
+```
+Распреедление внутри кластеров стало хуже.
+
+Метод WPGMA:
+```{r}
+corelation_data <- render_tree("mcquitty", dist_clark, corelation_data, "WPGMA (Кларк)", 2)
+```
+
+Кластеры все так же плохи.
+
+## Для расстояния по хорде
+Метод отдаленного соседа:
+```{r}
+corelation_data <- render_tree("complete", dist_chord, corelation_data, "отдаленного соседа (по хорде)", 2)
+```
+
+Расспределение групп стало немного лучше.
+
+Метод UPGMA:
+```{r}
+corelation_data <- render_tree("average", dist_chord, corelation_data, "UPGMA (по хорде)", 2)
+```
+
+Тут как обычно все плохо.
+
+Метод Варда:
+```{r}
+corelation_data <- render_tree("ward.D2", dist_chord, corelation_data, "Варда (по хорде)", 2)
+```
+Распреедление внутри кластеров более или менее, стали лучше.
+
+Метод WPGMA:
+```{r}
+corelation_data <- render_tree("mcquitty", dist_chord, corelation_data, "WPGMA (по хорде)", 2)
+```
+
+Кластеры очень плохи.
+
+## Посмотрим результат рассчетов:
+```{r}
+#Подправим название столюцов
+colnames(corelation_data) <- c('type', 'value', 'height')
+
+corelation_data <- corelation_data[order(corelation_data$value, decreasing = TRUE),]
+
+View(corelation_data)
+```
+Как виддно из результатов лучшим методом являеться метод UPGMA при расстоянии Эвклида и по хорде, хотя визуально он вызывает недоверие. С методом отдаленого соседа и WPGMA та же история. Метод Варда (Кларк) кажеться более подходящим для правильной кластеризации.
+
+## Бутстреп
+
+```{r}
+golub_transformed <- golub - min(golub) # Сдвиг данных, чтобы минимальное значение стало 0
+cl_boot <- pvclust(t(golub_transformed), method.hclust = "ward.D2", nboot = 60, method.dist = function(x) vegan::vegdist(t(x), "clark"), parallel = TRUE)
+
+plot(cl_boot)
+
+dendro <- as.dendrogram(cl_boot)
+
+#Для окраски ветвей: #Окраска
+groups <- factor(Golub_Merge$ALL.AML)
+group_colors <- c("ALL" = "red", "AML" = "yellow")
+arr_colored_group <- group_colors[groups][order.dendrogram(dendro)]
+
+  #Окраска ветвей
+dendro <- color_branches(dendro, k = length(groups), col =   arr_colored_group)
+
+plot(dendro)
+```
+Кластеры сохранили свою топологию, что говорит об устойчивости кластеров. Даже получили один "чистый" кластер с AML группой.
+
+## Танглеграмма
+```{r}
+hc_ward_bray <- hclust(dist_bray, method = "ward.D2")
+ph_ward_bray <- as.dendrogram(hc_ward_bray)
+
+hc_ward_log <- hclust(dist_log, method = "ward.D2")
+ph_ward_log <- as.dendrogram(hc_ward_log)
+
+set.seed(395)
+untang_w <- untangle_step_rotate_2side(ph_ward_bray, ph_ward_log, print_times = F)
+
+tanglegram <- tanglegram(untang_w[[1]], untang_w[[2]],
+           highlight_distinct_edges = FALSE,
+           common_subtrees_color_lines = F,
+           main = "Tanglegram",
+           main_left = "Вард, Брей-Кертис",
+           main_right = "Вард, Эвклид",
+           columns_width = c(8, 1, 8),
+           margin_top = 3.2, margin_bottom = 2.5,
+           margin_inner = 4, margin_outer = 0.5,
+           lwd = 1.2, edge.lwd = 1.2, 
+           lab.cex = 1.5, cex_main = 2)
+```
+При использовании растояний Брея-Кертиса и Эвклида в методе Варда, разница между деревьями получилась минимальной.

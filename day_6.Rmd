@@ -1,0 +1,265 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+#BiocManager::install("preprocessCore")
+#BiocManager::install("limma")
+library(mixOmics)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(vegan)
+library(readxl)
+library(tidyr)
+library(limma)
+library(preprocessCore)
+library(tidyr)
+library(tibble)
+#library(reshape)
+library(reshape2)
+```
+
+# Задание 1
+
+## Начало
+```{r}
+data_1_env <- read_excel("exam_task_6_data_1.xls", sheet = "env")
+data_1_fauna <- read_excel("exam_task_6_data_1.xls", sheet = "fauna")
+
+data_1 <- na.omit(merge(data_1_env, y = data_1_fauna, all.x = TRUE))
+
+data_1_env <- data_1[,2:ncol(data_1_env)]
+colnames(data_1_env) <- gsub("\\s*\\([^\\)]+\\)", replacement = "", colnames(data_1_env))
+colnames(data_1_env) <- gsub(" ", replacement = "_", colnames(data_1_env))
+data_1_fauna <- data_1[,(ncol(data_1_env) + 2):ncol(data_1_fauna)]
+```
+
+## Кореспондентный анализ
+```{r}
+data_1_cca <- cca(data_1_fauna ~ ., data = data_1_env)
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms")
+
+plot(data_1_cca, scaling = "site", main = "scaling 1")
+plot(data_1_cca, scaling = "species", main = "scaling 2")
+```
+Визуально average_turbidity кажеться наиболее 'свободным' относительно других предиктором (имеет наименьшую зависимость от других предикторов). Abstraction, Average_algae_cove, Regulation, Nitrate+Nitrite, N_total на графике кажутся наиболее влиятельными статистически предикторами.           
+
+Исходя из статьи: https://quantpalaeo.wordpress.com/2014/04/14/variance-inflation-factors-and-ordination-model-selection/
+VIF > 20 следует иключить из модели. Это Abstraction, Regulation, Grazing, fines, Conductivity, Alkalinity_Total, Nitrate+Nitrite, DRP, P_Total, Average_algae_cover, GrazingRank. Но поскольку Abstraction дает очень хорошее p-value оставим его. 
+```{r}
+data_1_cca <- cca(data_1_fauna ~ . - Regulation - Grazing - fines - Conductivity - Alkalinity_Total - `Nitrate+Nitrite` - DRP - P_Total - Average_algae_cover - GrazingRank, data = data_1_env)
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms") 
+```
+Путевку 'вон из модели' выигрывает pH. Посмотрим как изменяться результаты
+```{r}
+data_1_cca <- cca(data_1_fauna ~ Abstraction + Temperature + average_turbidity + N_total + `Average_%_shading` + Chl_a, data = data_1_env)
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms") #-pH  
+```
+vif стали намного лучше. Abstraction больше не вызывает мультиколлениарность. У нас появился новый значительный предиктор Temperature. Удалим Average_%_shading.
+```{r}
+data_1_cca <- cca(data_1_fauna ~ Abstraction + Temperature + average_turbidity + N_total + Chl_a, data = data_1_env) #Так просто уже легче перестраивать.
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms") 
+```
+Новых значимых предикторов нету. Выкинем N_total:
+```{r}
+data_1_cca <- cca(data_1_fauna ~ Abstraction + Temperature + average_turbidity + Chl_a, data = data_1_env)
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms") 
+```
+Все так же, идем дальше, выкидываем Chl_a:
+```{r}
+data_1_cca <- cca(data_1_fauna ~ Abstraction + Temperature + average_turbidity, data = data_1_env)
+
+vif.cca(data_1_cca)
+anova(data_1_cca, by="terms") 
+```
+
+Чтож до финала дошли победители второго раунда -> наиболее влиятельные статистические факторы среды это Abstraction и Temperature.
+
+```{r}
+data_1_cca <- cca(data_1_fauna ~ Abstraction + Temperature, data = data_1_env)
+
+plot(data_1_cca, scaling = "site", main = "scaling 1")
+
+plot(data_1_cca, scaling = "species", main = "scaling 2")
+```
+
+Притом судя по графику их влияение почти с одинаковой силы.
+
+```{r} 
+summary(data_1_cca)
+```
+Памятка по этому примеру: 
+Constrained - объясненная факторами среды (зависит от 'data =')
+Unconstrained - объясняемая видовым разнообразием (зависит от dataset в формуле)
+
+Параметры среды объясняют 86.1 % общей инерции. Видовое разнообразие объяснеят 13.9 % инерции. 
+
+# Задание 2
+
+## Начало
+
+Разобъем исходные данные: 
+```{r}
+data_2 <- read_excel("exam_task_6_data_2.xlsx")
+data_2_params <- data_2[c(2:89), c(1:3)]
+colnames(data_2_params) <- data_2[c(1), c(1:3)]
+data_2_nums <- data_2[c(2:89), c(4:100)]
+
+#unique_names <- names(data_2_nums)[!duplicated(names(data_2_nums), fromLast = TRUE)]
+unique_names <- unique(colnames(data_2_nums))
+data_2_nums <- data_2_nums[, unique_names]
+```
+Создадим рабочий dataframe, после нормализации згачений:
+```{r}
+data_2_determ <- data_2_nums %>% 
+  mutate(id=row_number()) %>%
+  melt(id.vars="id", measure.vars=c(1:ncol(data_2_nums))) %>%
+  pivot_wider(id_cols="variable", names_from="id") %>%
+  separate_wider_delim(variable, delim="_", 
+                       names=c("location", "species", "sdata")) %>%
+  separate_wider_regex(sdata, c(height=".", series="\\d+"))
+```
+
+Поробуем нормализовать значения:
+```{r}
+num_data <- data_2_determ[,-c(1:4)]
+num_data <- num_data %>%
+  mutate(across(where(is.numeric), ~ replace_na(., min(., na.rm = TRUE))))
+
+minMax <- function(x) {
+  return(x - min(x)) / (max(x) - min(x))
+}
+
+num_data <- log(num_data + 1)
+#temp_data <- temp_data %>% summarise(across(everything(), minMax))
+
+colnames_data <- colnames(num_data)
+num_data <- normalize.quantiles(as.matrix(num_data))
+num_data <- as.data.frame(num_data)
+colnames(num_data) <- colnames_data
+
+ggplot(num_data, aes(num_data[,2])) +
+  geom_density() +
+  theme(strip.text.y = element_text(size = 5))
+
+#Втавляем нормализованные значения обратно
+data_2_determ[,-c(1:4)] <- num_data
+```
+
+## sPLS-DA
+
+Сгенерируем оси:
+```{r}
+X <- data_2_determ[,-c(1:4)] #Отбираем метаболиты 
+Y <- as.factor(data_2_determ$species) #Отбираем виды
+```
+Начертим графики ординации объектов и нагрузок. 
+```{r}
+MyResult.splsda <- splsda(X, Y, keepX = c(50, 50), ncomp = 4) 
+plotIndiv(MyResult.splsda) 
+plotVar(MyResult.splsda) 
+```
+
+На графиках невозможно разгядеть никаких намеков на кластреры.
+
+### Версия "с отбором оптимальных параметров"
+
+```{r}
+list.keepX <- c(5:10,  seq(20, 80, 10))
+set.seed(30) 
+#V1_obt_L4, L4 - литораль
+tune.splsda.srbct <- tune.splsda(X, Y, ncomp = 4, 
+                                 validation = "Mfold", 
+                                 folds = 10, 
+                                 measure = "BER", 
+                                test.keepX = list.keepX, 
+                                nrepeat = 10)
+
+ncomp <- tune.splsda.srbct$choice.ncomp$ncomp 
+ncomp
+
+select.keepX <- tune.splsda.srbct$choice.keepX[1:ncomp] 
+select.keepX
+```
+Получили 4 кластрера.
+
+### Оптимизированный sPLS-DA
+```{r}
+MyResult.splsda.fixed <- splsda(X, Y, ncomp = ncomp, keepX = select.keepX)
+```
+
+```{r}
+layout(matrix(c(1, 2, 3, 3, 3, 3), 2, 3))
+plotLoadings(MyResult.splsda.fixed, comp = 1, size.name = 1, size.title = 1.2, title = "Loadings\n on 1st component", contrib = "max", legend = FALSE, col.ties="black", ndisplay = 10)
+plotLoadings(MyResult.splsda.fixed, comp = 2, size.name = 1, size.title = 1.2, title = "Loadings\n on 2nd component", contrib = "max",ndisplay = 10,  legend = FALSE, col.ties="black")
+plotIndiv(MyResult.splsda.fixed, ind.names = F, ellipse = T, style = "graphics", abline = TRUE, cex = 2, pch = 19, size.axis = 1.2, size.xlabel = 1.5, size.ylabel = 1.5, title = "sPLS-DA ordination of samples", size.title = 1.5)
+legend("bottomright", legend = levels(Y), cex = 1.5, fill = color.mixo(1:4), bty = "n")
+```
+
+Вычислимметаболиты наиболее влиющие (корредированые) на кластреры:
+```{r}
+#Правим столбцы для удобства
+for (i in 1:88) {
+  colnames(X)[i] <- data_2[2 + i - 1, 1]
+} 
+colnames(X) <- paste0(colnames(X), "_", 1:nrow(X))
+
+MyResult.splsda.fixed <- splsda(X, Y, ncomp = ncomp, keepX = select.keepX)
+#Не втавляли их ранее потому, что слишком длинные имена вызывают ошибку в ранее прорисованном графике
+
+loadings <- as.data.frame(MyResult.splsda.fixed$loadings$X)
+
+get_max_rows <- function(data, cols) {
+  max_rows <- data.frame()
+  for (col in cols) {
+    max_row <- data[which.max(abs(data[, col])), ]
+    max_rows <- rbind(max_rows, max_row)
+  }
+  return(max_rows)
+} 
+
+maxs_temp <- get_max_rows(loadings, colnames(loadings))
+maxs <- data.frame(
+  claster = colnames(loadings),
+  metabolism = rownames(maxs_temp),
+  value = diag(as.matrix(maxs_temp))
+  )
+maxs
+```
+Выще мы видим список наиболее влиятельных метаболитов на 4 кластрера. Причем все корреляции отрицательны, что говорит о возможно негативном влиянии этих метаболитов на популяции улиток.
+
+### Классификация
+Подставим полученные значения ncomp и keepX:
+
+```{r}
+background <- background.predict(MyResult.splsda.fixed,
+                                 comp.predicted=2,
+                                dist = "max.dist") 
+
+plotIndiv(MyResult.splsda, comp = 1:2, group = Y,
+          ind.names = FALSE, title = "Maximum distance",
+          legend = TRUE,  background = background)
+```
+
+Здесь видны три кластера. Первый кластер содержит в себе вид sax и часть вида arc, второй - obt и часть вида arc, третий имеет - comp и часть sax. Вид fab фактически залезает во второй и третий кластрер в равной степени.
+

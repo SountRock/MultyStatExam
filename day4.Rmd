@@ -1,0 +1,326 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(gridExtra)
+library(ape)
+library(dendextend)
+library(pvclust)
+library(tibble)
+library(tidyr)
+library(broom)
+library(ggmap)
+library(ggvegan)
+library(readxl)
+library(psych)
+library(car)
+library(factoextra)
+```
+
+# Начало
+-- Tot_WBC — общее число белых кровяных клеток
+-- Het_ABS — общее число гетерофилов
+-- Lym_ABS — общее число лимфоцитов
+-- H:L Ratio — соотношение гетерофилов и лимфоцитов
+-- Mon_ABS — число моноцитов
+-- OthG_ABS — число прочих гранулоцитов
+-- Известно, что гематологическая картина у ящериц зависит в том числе от общего физиологического состояния, которое косвенно можно оценить при помощи индекса, описывающего размеры тела, вернее, отклонение от обычных размеров (переменная LBSI — Linear Body Size Index, остаток от RMA-регрессии логарифма массы от логарифма длины тела).
+
+```{r}
+data_start <- read_excel("exam_task_4_data.XLSX")
+colnames(data_start) <- gsub(" ", replacement = "_", colnames(data_start))
+
+boxplot(data_start)
+```
+
+На графике видим какой-то ужас. 
+Поработеам над данными:
+```{r}
+log_data <- log(data_start[13:18] + 1)
+#! устраням проблемму единиц измерения
+
+# Функция, которая может центрировать вектор
+center <- function(x){
+  x - mean(x, na.rm = TRUE)
+}
+# по строкам
+dbcent <- t(apply(log_data, 1, center))
+
+# по столбцам
+center_log_data <- apply(t(dbcent), 1, center)
+
+boxplot(center_log_data)
+```
+
+Попробуем еще раз нормализовать значения:
+```{r}
+normilize_2 <- function(x) {
+  return((x - mean(x)) / sd(x))
+}
+
+data_2 <- as.data.frame(center_log_data) %>% summarise(across(everything(), normilize_2))
+
+boxplot(data_2)
+
+#Сохраним нужные для дальнейшего анализа предикторы
+data_2_w <- data_2 %>% mutate(Treatment = data_start$Treatment,
+                              Habitat = data_start$Habitat,
+                              Connectivity = data_start$Connectivity)
+```
+
+Вроде стало немного лучше. 
+
+# Различается ли состав крови ящериц из немодифицированного и сильно модифицированного ландшафтов?
+
+## Анализ главных компонентов
+```{r}
+res.pca_1 <- prcomp(data_2_w[1:6]) #Сам анализ главных компонентов
+groups <- as.factor(data_2_w$Treatment)
+
+fviz_pca_ind(res.pca_1, axes =   c(1,2),
+             col.ind = groups, 
+             palette = c("#00AFBB",  "#FC4E07"),
+             addEllipses = TRUE, 
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = TRUE
+)
+
+s_pca_1 <- summary(res.pca_1)
+s_pca_1
+```
+
+Видны различия между группами. 
+
+## perMANOVA/ANOSIM
+
+Проверим различия дисперсии в группах:
+```{r}
+dist_data_2 <- vegdist(data_2, method  = "manhattan")
+
+ord_1 <- metaMDS(comm = data_2, distance = "manhattan", k = 2, trymax = 97, try = 97)
+stressplot(ord_1)
+
+PCO_1 <- betadisper(dist_data_2, data_start$Treatment)
+plot(PCO_1)
+anova(PCO_1)
+```
+Дисперсии достаточно схожи по форме -> мы можем провести PERMANOVA.
+
+Проведем дисперсионный анализ:
+
+```{r}
+permanova_centaurium <- adonis(data_2 ~ data_2_w$Treatment, method = "manhattan")
+permanova_centaurium
+```
+По результатам дисперсионного анализа существуют значимые различия между группами.
+
+Объявим функцию для анализа: 
+
+```{r}
+pairwise_permanova <- function(dat, group, strata = NULL, ...){
+  pair <- combn(unique(as.character(group)), 2)
+  ncomb <- ncol(pair)
+  res <- rep(NA, ncomb)
+  for (i in 1:ncomb) {
+    filter <- group %in% pair[, i]
+    if(is.null(strata)){
+      posthoc <- adonis2(dat[filter, ] ~ group[filter], ...)$`Pr(>F)`[1]
+    } else {
+      posthoc <- adonis2(dat[filter, ] ~ group[filter], 
+                        strata = strata[filter], ...)$`Pr(>F)`[1]
+    }
+    res[i] <- posthoc
+    names(res)[i] <- paste(pair[, i], collapse = " vs. ")
+  }
+  return(res)
+}
+```
+
+```{r}
+p_vals_1 <- pairwise_permanova(
+  dat = data_2, group = data_2_w$Treatment, 
+  method = "manhattan", permutations=99999)
+p_vals_1
+```
+Выше указанное значения указвает на весомые различия между разными типами модификаций среды.
+
+# Проверьте, различается ли состав крови ящериц в разных местообитаниях в сильно модифицированном ландшафте 
+
+## Подготовка данных
+```{r}
+data_3 <- data_2_w %>% filter(Treatment == 2) 
+```
+
+## Анализ главных компонентов
+```{r}
+res.pca_2 <- prcomp(data_3[1:6]) #Сам анализ главных компонентов
+groups <- as.factor(data_3$Habitat)
+
+fviz_pca_ind(res.pca_2, axes = c(1, 2),
+             col.ind = groups, 
+             palette = c("#00AFBB",  "#FC4E07", "#FFA500"),
+             addEllipses = TRUE, 
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = TRUE
+)
+
+s_pca_2 <- summary(res.pca_2)
+s_pca_2
+```
+Различия между различия между группами не выглядят сущесвенными.
+
+## perMANOVA/ANOSIM
+
+Проверим различия дисперсии в группах:
+```{r}
+dist_data_3 <- vegdist(data_3[1:6], method = "manhattan")
+
+ord_2 <- metaMDS(comm = data_3[1:6], distance = "manhattan", k = 2, trymax = 97, try = 97)
+stressplot(ord_2)
+
+PCO_2 <- betadisper(dist_data_3, data_3$Habitat)
+plot(PCO_2)
+anova(PCO_2)
+```
+
+Две группы имеют схожесть в дисперсии, но одна другая сильно контрастирует с этими двумя. Есть наложение диспрсий. perMANOVA неприминим.
+
+Используем ANOSIM: 
+```{r}
+com_anosim_2 <- anosim(dist_data_3,
+                     grouping = data_3$Habitat,
+                     permutations = 99,
+                     distance = "manhattan")
+
+summary(com_anosim_2)
+
+R_perms_2 <- data.frame(R = com_anosim_2$perm )
+Pl_vegan_2 <- ggplot(R_perms_2, aes(x = R)) + geom_histogram()+ geom_vline(xintercept = com_anosim_2$statistic)
+Pl_vegan_2
+
+plot(com_anosim_2, main = "Dissimilarity ranks \n between and within classes")
+
+```
+
+Significance слишком высокое, что говорит об отсуствии различий между группами. Визуально по первому графику различия тоже не обнаружены. На втором графике все группы будто расположены на одной оси, что тоже говорит в пользу отсуствия различий.
+
+#  Проверьте, влияет ли степень связности на состав крови ящериц из сильно модифицированного ландшафта.
+
+## Анализ главных компонентов
+```{r}
+res.pca_3 <- prcomp(data_3[1:6]) 
+groups <- as.factor(data_3$Connectivity)
+
+fviz_pca_ind(res.pca_3, axes = c(1, 2),
+             col.ind = groups, 
+             palette = c("#00AFBB",  "#FC4E07", "#FFA500", "#9ACD32"),
+             addEllipses = TRUE, 
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = TRUE
+)
+
+s_pca_3 <- summary(res.pca_3)
+s_pca_3
+```
+Между группами замечато отсутствие различия.
+
+## perMANOVA/ANOSIM
+
+Проверим различия дисперсии в группах:
+```{r}
+PCO_3 <- betadisper(dist_data_3, data_3$Connectivity)
+plot(PCO_3)
+anova(PCO_3)
+```
+
+Дисперсии сильно разняться. Есть наложение диспрсий. perMANOVA неприминим.
+
+Используем ANOSIM: 
+```{r}
+com_anosim_3 <- anosim(dist_data_3,
+                     grouping = data_3$Connectivity,
+                     permutations = 99,
+                     distance = "manhattan")
+
+summary(com_anosim_3)
+
+R_perms_3 <- data.frame(R = com_anosim_3$perm )
+Pl_vegan_3 <- ggplot(R_perms_3, aes(x = R)) + geom_histogram()+ geom_vline(xintercept = com_anosim_3$statistic)
+Pl_vegan_3
+
+plot(com_anosim_3, main = "Dissimilarity ranks \n between and within classes")
+
+```
+Significance слишком высокое, что говорит об отсуствии различий между группами. Визуально по первому графику различия тоде не обнаружены. На втором графике все группы будто расположены на одной оси, что тоже говорит в пользу отсуствия различий.
+
+# Влияют ли на состав крови ящериц из сильно модифицированного ландшафта тип местообитания и степень связности.
+
+## Анализ главных компонентов
+```{r}
+groups <- as.factor(data_3$Connectivity)
+
+data_4 <- data_3
+data_4$Connectivity_Habitat <- paste(data_3$Connectivity,
+                                 data_3$Habitat, sep = "_")
+
+groups <- as.factor(data_4$Connectivity_Habitat)
+
+fviz_pca_ind(res.pca_3, axes = c(1, 2),
+             col.ind = groups, 
+             addEllipses = TRUE, 
+             ellipse.type = "confidence",
+             legend.title = "Groups",
+             repel = TRUE
+)
+
+s_pca_3 <- summary(res.pca_3)
+s_pca_3
+
+res.pca_3$Connectivity <- data_3$Connectivity
+res.pca_3$Habitat <- data_3$Habitat
+```
+
+Визуально различия будто отсуствуют. 
+## perMANOVA/ANOSIM
+
+Проверим различия дисперсии в группах:
+```{r}
+
+dist_data_4 <- vegdist(data_3[1:6], method  = "manhattan")
+PCO_4 <- betadisper(dist_data_4, data_4$Connectivity_Habitat)
+plot(PCO_4)
+anova(PCO_4)
+```
+Дисперсии просто хаотичны между собой. Проведем ANOSIM:
+```{r}
+com_anosim_4 <- anosim(dist_data_4,
+                     grouping = data_4$Connectivity_Habitat,
+                     permutations = 99,
+                     distance = "manhattan")
+
+summary(com_anosim_4)
+
+R_perms_4 <- data.frame(R = com_anosim_4$perm )
+Pl_vegan_4 <- ggplot(R_perms_4, aes(x = R)) + geom_histogram()+ geom_vline(xintercept = com_anosim_4$statistic)
+Pl_vegan_4
+
+plot(com_anosim_4, main = "Dissimilarity ranks \n between and within classes")
+```
+Significance слишком высокое, что говорит об отсуствии различий между группами. Визуально по второму графику обнаружены различия групп 1,2 и 1,3 Connectivity и Habitat соотвественно. Остальные группы не имеют между собой весомых различий. 
+Это все ожидаемо, с учетом того, что по отдельности различия между группами по Connectivity и Habitat не были обнаружены.

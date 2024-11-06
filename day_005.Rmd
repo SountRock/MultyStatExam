@@ -1,0 +1,166 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(ggpubr)
+library(factoextra)
+library(cowplot)
+library(factoextra)
+```
+
+# Начало
+
+Переменные:
+1) id - идентификационный номер пациента
+2) diagnosis - диагноз (M = malignant, B = benigh)
+3-12) среднее, 13-22) - стандартное отклонение и 23-32) - худшее значение следующих признаков:
+a) radius (mean of distances from center to points on the perimeter)
+b) texture (standard deviation of gray-scale values)
+c) perimeter
+d) area
+e) smoothness (local variation in radius lengths)
+f) compactness (perimeter^2 / area - 1.0)
+g) concavity (severity of concave portions of the contour)
+h) concave points (number of concave portions of the contour)
+i) symmetry
+j) fractal dimension ("coastline approximation" - 1)
+
+```{r}
+brc_start <- read.csv("https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data", header = F)
+features <- c("radius", "texture", "perimeter", "area", "smoothness", "compactness", "concavity", "concave_points", "symmetry", "fractal_dimension")
+names(brc_start) <- c("id", "diagnosis", paste0(features,"_mean"), paste0(features,"_se"), paste0(features,"_worst"))
+```
+
+# Проведите анализ главных компонент. Какую долю общей изменчивости объясняют первые две главные компоненты?
+
+Анализ главных компонент:
+```{r}
+brc[3:32] <- log(brc_start[3:32] + 1) 
+brc[3:32] <- scale(brc[3:32])
+prepare_brc <- brc[3:32]
+brc_pca <- rda(prepare_brc, scale = TRUE)
+
+summary(brc_pca)
+```
+
+Самую большую изменчивость вносит компонента PC1 (наибольшее Eigenvalue и набольший вклад в изменчивость по Proportion Explained). Но наибольшую дисперсии данные объясняют компонеты PC29 и PC30 (Cumulative Proportion).
+
+## Графики
+
+```{r}
+biplot(brc_pca, scaling = "species", display = "species")
+
+biplot(brc_pca)
+```
+
+Видна сильная корреляция между признаками. Наибольшее вляение на PC1 вности concave_points_mean и concave_points_worst (более перпендикулярен PC1), а для PC2 smoothness_se и fractal_dimension_worst. Главные подозреваемые влияения на PC.
+
+# Постройте график ординации объектов в пространстве первых двух компонент и раскрасьте точки в зависимости от диагноза. 
+
+Построим график ординации:
+```{r}
+df_scores <- data.frame(brc,
+                        scores(brc_pca, display = "sites", choices = c(1, 2, 3), scaling = "sites"))
+
+p_scores <- ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes( color = diagnosis), alpha = 0.5) +
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) + ggtitle(label = "Ординация в осях главных компонент") + theme_bw()
+p_scores
+```
+
+Видны различия между группами, но в тоже время есть не сильная полоса сопприкосновения облаков, что может вызвать подозрения.
+
+# При помощи таблицы или графика факторных нагрузок определите, какие признаки вносят вклад в изменчивость вдоль первых двух главных компонент. 
+
+```{r}
+factor_loads <- scores(brc_pca, display = "species", 
+       choices = c(1, 2), scaling = 0)
+factor_loads
+```
+График факторных нагрузок:
+```{r}
+#Для графика
+factor_loads_data <- as.data.frame(factor_loads)
+factor_loads_data$factor <- rownames(factor_loads_data)
+rownames(factor_loads_data) <- NULL
+
+p_factor_loads_PC1 <- ggplot(factor_loads_data, aes(x = factor, y = abs(PC1))) +
+   geom_bar(stat = "identity") + 
+    scale_x_discrete(guide = guide_axis(n.dodge=4)) 
+
+p_factor_loads_PC2 <- ggplot(factor_loads_data, aes(x = factor, y = abs(PC2))) +
+   geom_bar(stat = "identity") + 
+    scale_x_discrete(guide = guide_axis(n.dodge=4))
+
+plot_grid(p_factor_loads_PC1, p_factor_loads_PC2, nrow = 2)
+```
+
+
+Набольшее влияние на PC1 вносить фактор concave_points_mean, для PC2 fractal_dimension_worst. Что мы уже ранее подозревали. 
+
+# Вдоль какой из компонент более выражено разделение облаков точек?
+
+```{r}
+brc_pca_base<- prcomp(brc[, 3:32], scale = TRUE)
+fviz_pca_ind(brc_pca_base,
+             geom.ind = "point", 
+             col.ind = brc$diagnosis, 
+             addEllipses = TRUE,
+             legend.title = "diagnosis"
+             )
+```
+
+Более выражено разделение компонент наблюдаеться на PC2.
+
+Различие между группами визуально слабое. 
+
+# Проверить наличий различий между группами 
+
+Проведем nMDS: 
+```{r}
+ord <- metaMDS(comm = prepare_brc, distance = "bray", autotransform = F, trymax = 50, try = 50)
+```
+Построим ординацию:
+```{r}
+ord_pt <- data.frame(brc, scores(ord, display = "sites"))
+ggplot(ord_pt, aes(NMDS1, NMDS2, color = diagnosis)) + 
+  geom_point() +
+  ggtitle(label = "Ординация nMDS")
+```
+
+Ну... мы получили червячка в яйце :). Если честно какие либо выводы здесь сделать сложно.
+
+Проведем ANOSIM: 
+```{r}
+dist_brc <- vegdist(brc[3:32], method = "manhattan")
+
+res_anosim <- anosim(dist_brc,
+                     grouping = brc$diagnosis,
+                     permutations = 30,
+                     distance = "manhattan")
+
+summary(res_anosim)
+
+R_perms <- data.frame(R = res_anosim$perm )
+Pl_vegan <- ggplot(R_perms, aes(x = R)) + geom_histogram()+ geom_vline(xintercept = res_anosim$statistic)
+Pl_vegan
+```
+
+Из первого графика видны весомые отличия между разными диганозами. Значения R достаточно высокое, p-value < 0.05, что говорит в пользу наличия различий.
+

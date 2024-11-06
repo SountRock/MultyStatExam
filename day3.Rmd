@@ -1,0 +1,247 @@
+---
+title: "День 1"
+author: "Чупов Е. А"
+date: "28.10.2024"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(gridExtra)
+library(ape)
+library(dendextend)
+library(pvclust)
+library(tibble)
+library(tidyr)
+library(broom)
+library(ggmap)
+library(ggvegan)
+library(readxl)
+library(psych)
+library(car)
+```
+
+# Задание 1
+
+Для данных BCI необходимо провести тестирование мантеловской
+корреляции и оценить наличие взаимосвзяи с группами.
+
+## Начало
+
+```{r}
+data(BCI, BCI.env)
+BCI_env <- BCI.env[,c(1,2,3,4,9)]
+```
+
+## Вычисление мантеловской корреляции
+```{r}
+dist_trees <- vegdist(BCI, method = "bray")
+
+dist_env <- vegdist(BCI_env, method = "euclidean")
+
+x <- as.vector(dist_trees)
+y <- as.vector(dist_env)
+R <- round(cor(x, y, method = "pearson"), 3)
+
+xy <- data.frame (x, y)
+mant <- ggplot(xy, aes(x=x, y=y))
+mant + geom_point(size=2) + xlab ("Tree dissimilarity") + ylab ("Enviromet Plases dissimilarity") + annotate("text", x=0.25, y=0.35, label=paste("Rspearmen =", R, sep=" ")) + theme_bw() + geom_smooth(method = "lm", se = FALSE)
+```
+
+Видно взаимное увеличение различий
+
+## Пермутационная оценка значимости мантеловской корреляции
+```{r}
+mant <- mantel(dist_trees, dist_env, method="pearson", permutations = 9999)
+mant
+```
+Есть корреляция между параметрами местности и характеристикой разнообразия деревьев.
+R и Significance(p) указывают на достаточное влияение параметров среды на состав разнообразия деревьев на участках.
+
+# Задание 2
+
+Данные из статьи Bäcklund, S., Jönsson, M., Strengbom, J.,
+Frisch, A., & Thor, G. (2016). A pine is a pine and a spruce is a
+spruce–the effect of tree species and stand age on epiphytic lichen
+communities. PloS one, 11(1), e0147004. 
+
++ Постройте ординацию в осях
+nMDS, раскрасив точки в разные цвета в зависимости от вида дерева и его
+возраста 
+
++ Проверьте гипотезу о различиях в структуре сообществ на
+разных деревьях и разных возрастов 
+
++ Проверьте условия применимости
+ANOSIM 
+
++ Проведите попарное сравнение всех деревьев и выявите виды,
+которые отличаются
+
+## Начало
+```{r}
+data_start <- read_excel("exam_task_3_data.XLSX")
+colnames(data_start) <- gsub(" ", replacement = "_", colnames(data_start))
+
+data_start <- data_start[-c(1,2)] #Удаляем ненужное
+
+data_describes <- unique(data_start[c(1,2,3)]) #Отбираем уникальные значения по первым трем столбцам
+
+data_start %>%
+  group_by(Stand_ID) %>%
+  slice(1) #Групперум по Stand_ID и извлекаем только первую строку
+
+data <- aggregate(.~ Stand_ID, data = data_start[-c(2,3)], FUN = sum, drop = TRUE) #Получаем сводную статистику, суммируя строки по ID
+
+data <- merge(data, data_describes, by = "Stand_ID")
+```
+
+## MDS
+
+```{r}
+prepare_data <- data[2:58] %>% mutate(Age_class = data$Age_class)
+
+ord <- metaMDS(comm = prepare_data, distance = "bray", k = 2, trymax = 97, try = 97)
+```
+Графики:
+```{r}
+plot(ord) 
+
+stressplot(ord)
+```
+
+На первом графике мы будто видим переход одной группы в другую. Причем вторая группа (+) имеет значительно больший разброс значений чем другая.
+stressplot выдает достаточно линейную зависимость.
+
+## Ординация в осях nMDS
+Подготовим данные:
+```{r}
+stres_ord <- ord$stress
+ord$points
+scores(ord)
+mds_points <- as.data.frame(scores(ord)$site)
+```
+Сам график:
+```{r}
+base_ordinata <- ggplot(mds_points, aes(x = NMDS1, y = NMDS2)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle(paste("Stress = ", stres_ord))
+
+p_ordiat_age <- base_ordinata + 
+  geom_point(aes(color = data$Age_class), size = 4) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(color = "Возраст")
+  
+p_ordiat_age
+
+p_ordiat_tree_species <- base_ordinata + 
+  geom_point(aes(color = data$tree_species), size = 4) +
+  labs(color = "Вид деревьев")
+  
+p_ordiat_tree_species
+```
+
+Из графика ранее озвученный переход виден более четко. Малая возрастная группа переходит в большую с увиличением разброса значений. Причем последнее указывает на различие в структуре сообществ разных возрастов.
+Между видами T и C видно минимум различий, но группы gran и t имеют весомый разброс относительно других групп.
+Но ориднация показывает лишь распреедление исходных данных в 2D. 
+Поэтому для проверки гипотезы проведем PERMANOVA:
+```{r}
+dist_data <- vegdist(data[2:58], method = "bray")
+
+disp_multy <- adonis2(dist_data ~ tree_species * Age_class, data = data)
+summary(disp_multy)
+
+disp_multy_tree_species <- adonis2(dist_data ~ tree_species, data = data)
+summary(disp_multy_tree_species)
+
+disp_multy_Age_class <- adonis2(dist_data ~ Age_class, data = data)
+summary(disp_multy_Age_class)
+```
+Значения Pr(>F) все меньше 0.05 -> структура сообществ отличается в зависимости от вида и возраста дерева.
+Проводя анализ для факторов по отдельности мы видим, что F для Возрастов намного больше чем при комбинации tree_species * Age_class, что не скажешь о F для видов деревьев -> предиктор Age_class более значим для создания различий. Мы уже могли это подозревать смотря на ординации.
+
+## ANOSIM
+
+Из важных условий, которые нам нужны для проверки на применимость ANOSIM, проверим гомогенность дисперсий: 
+```{r}
+goho_group <- betadisper(dist_data, data$tree_species)
+
+gom_disp <- anova(goho_group)
+summary(gom_disp)
+```
+F-value указывает на возможные различия между группами, p-value < 0.05 -> гомогенности дисперсий, это говорит что результаты результаты ANOSIM могут быть искажены.
+
+Проверка применимости ANOSIM для tree_species:
+```{r}
+data_env <- data[59:60]
+sim_tree_species <- with(data_env, simper(prepare_data, tree_species))
+summary(sim_tree_species)
+```
+
+Памятка:
+average: Средний вклад данного вида в различия между двумя группами (чем выше значение, тем больше вклад).
+sd: Стандартное отклонение вклада этой группы.
+ratio: Отношение среднего вклада к стандартному отклонению. Более высокое значение ratio говорит о том, что вклад группы более стабилен и последователен в разных выборках.
+ava и avb: Средние значения численности в группах a и b.
+
+Par_amb и Bry_fus имеют большее значение ratio -> они вносят наибольшие различия между видами. 
+Hyp_phy вносит меньший вклад из-за близких средних значений между группами (ava и avb).
+Налчие этих различий указвает на возможность применения ANOSIM.
+
+Проведем ANOSIM, групперируя по видам деревьев:
+```{r}
+group <- as.factor(data$tree_species)
+
+com_anosim_tree_species <- anosim(dist_data,
+                     grouping = group,
+                     permutations = 99,
+                     distance = "bray")
+summary(com_anosim_tree_species)
+
+plot(com_anosim_tree_species, main = "Dissimilarity ranks \n between and within classes")
+```
+Видны значительные различия между видами (хотя значение R вызывает подозрения). Значительные отличия имеються между видами gran и t (хоть и на последнем видны сильные выбросы)
+
+Проверка применимости ANOSIM для Age_class:
+```{r}
+sim_Age_class <- with(data_env, simper(prepare_data, Age_class))
+summary(sim_Age_class)
+```
+
+Par_amb, Bry_fus, и Hyp_phy вносят весомые различия в возрастные группы, что говорит о целесообразности применения ANOSIM.
+
+Проведем ANOSIM, групперируя по возрасту деревьев:
+```{r}
+group <- as.factor(data$Age_class)
+
+com_anosim_Age_class <- anosim(dist_data,
+                     grouping = group,
+                     permutations = 99,
+                     distance = "bray")
+summary(com_anosim_Age_class)
+
+plot(com_anosim_Age_class, main = "Dissimilarity ranks \n between and within classes")
+```
+
+Достаточно низкое p-value и высокое R указывает на наличии различий. Визуально наибольшие различия видны между возрасными гуппами 15 и 85 лет. 
+
+
+
+
+
+
+
+
+
+
+
+
